@@ -2,9 +2,9 @@ import discord
 from discord.ext import commands
 import math
 
-# Paginator built using https://www.youtube.com/watch?v=PRC4Ev5TJwc&t=1s
 class PaginatorClass(commands.Cog):
-    
+
+    # Paginator built using https://www.youtube.com/watch?v=PRC4Ev5TJwc&t=1s
     class Paginator(discord.ui.View):
     
         def __init__(self, items, item_type):

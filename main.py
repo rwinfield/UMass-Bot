@@ -9,16 +9,23 @@ import html2text
 import discord.ui
 import sqlite3
 
-bot = commands.Bot(command_prefix="!", intents=discord.Intents().all())
+prefix = "!"
+
+bot = commands.Bot(command_prefix=prefix, intents=discord.Intents().all())
+
+bot.remove_command('help')
+
 
 @bot.event
 async def on_ready():
     print('Logged in as {0.user}'.format(bot))
-    cog_files = ['cmds.notifications', 'cmds.events', 'cmds.paginator', 'cmds.clubs']
-    for cog_file in cog_files:  
-        await bot.load_extension(cog_file)  
-        print(f"{cog_file} has loaded.") 
-        
+    cog_files = [
+        'cmds.notifications', 'cmds.events', 'cmds.paginator', 'cmds.clubs'
+    ]
+    for cog_file in cog_files:
+        await bot.load_extension(cog_file)
+        print(f"{cog_file} has loaded.")
+
     await bot.change_presence(activity=discord.Game(name="!help"))
 
     connection = sqlite3.connect("notifications_db.db")
@@ -173,8 +180,110 @@ def format_duration(minutes):
 @bot.command()
 async def invite(ctx):
     await ctx.send(
-        "Invite me to your server!\nhttps://discord.com/api/oauth2/authorize?client_id=1123433115495440415&permissions=69268817313729&scope=bot"
+        "Invite me to your server!\nhttps://discord.com/api/oauth2/authorize?client_id=1123433115495440415&permissions=8&scope=bot"
     )
+
+
+@bot.command()
+async def help(ctx, args: str = None):
+    embed = discord.Embed(title="UMass Bot Help", color=0x971B2F)
+    if args == None:
+        embed.add_field(
+            name=
+            f"Bot prefix: `{prefix}`. Run `{prefix}help [command]` for more information on any command.",
+            value="",
+            inline=False)
+        embed.add_field(
+            name="events",
+            value=
+            f"Show all events happening on campus. Optional field: `{prefix}events [mm/dd/yyyy]` to show events happening on or after a particular date."
+        )
+        embed.add_field(
+            name="clubs",
+            value=
+            f"Aliases: `club`, `rso`, `rsos`\nShow all registered student organizations on campus. Optional field: `{prefix}clubs [search query]` to search for events matching your criteria.\nOptional field: `{prefix}clubs more [club identifier]` to view more information about a club.",
+            inline=False)
+        embed.add_field(
+            name="notify",
+            value=
+            "SERVER ADMIN ONLY: Set notifications for events hosted by particular clubs/RSOs.",
+            inline=False)
+        embed.add_field(
+            name="notifications",
+            value=
+            f"SERVER ADMIN ONLY: View your notifications in your server. `{prefix}remove [notification #]` to remove a notifiation.",
+            inline=False)
+        embed.add_field(
+            name="dining",
+            value=
+            "Alias: `menu`\nFind today's menus for breakfast, lunch, or dinner at all four dining halls across campus.",
+            inline=False)
+        embed.add_field(
+            name="invite",
+            value=
+            "Generate an invite link so you can add me to another server!",
+            inline=False)
+        embed.set_footer(
+            text="UMass Bot was built and developed by fiat_multipla.")
+        await ctx.send(embed=embed)
+
+    elif args.lower() == "events":
+        embed.add_field(
+            name="Showing help for `events`",
+            value=
+            f"Aliases: None\nOptional argument: `[mm/dd/yyyy formatted date]`\nThis command will help find events according to your likings. Through a series of dropdowns, you can select your preferences and search for events that fit those critera. Additionally, you may enter a date, i.e. `{prefix}events 7/19/2023`, to only select events on or after a given day."
+        )
+        await ctx.send(embed=embed)
+
+    elif args.lower() in {
+            "clubs", "club", "rso", "rsos", "notify", "notifications",
+            "notifications delete", "notifications remove"
+    }:
+        embed.add_field(name="Showing help for all club/RSO related commands",
+                        value="",
+                        inline=False)
+        embed.add_field(
+            name="clubs",
+            value=
+            f"Aliases: `club`, `rso`, `rsos`\nOptional argument: `[search query]`\nFind clubs and RSOs at UMass. A series of dropdowns will help filter results to your criteria. Additionally, you may enter a serarch query, i.e. `{prefix}clubs environmental`, to show clubs maktching a keyword or phrase.",
+            inline=False)
+        embed.add_field(
+            name="clubs more",
+            value=
+            f"Aliases: Any of the above + `more`\nArgument: `[club identifier]`\nUse this to find more information on a club or RSO. This will provide a longer description, information about meeting dates, and social media links. Provide a club identifier which can be found when running the default `{prefix}clubs` command. This is also the WebsiteKey used in the last part of a club's URL on Campus Pulse (i.e. the `umoc` in https://umassamherst.campuslabs.com/engage/organization/umoc).",
+            inline=False)
+        embed.add_field(
+            name="notify",
+            value=
+            "Aliases: None\nONLY SERVER ADMINISTRATORS MAY RUN THIS COMMAND.\nUse to add notifications about upcoming events to your Discord server! Enter the identifier for the host/club/RSO, specify the lead time(s) (amount of time before each event when you would like notifications to be sent), and then select the role(s) (if any) that you would like to be notified. Usage is step-by-step and a syntax guide is provided for each step. Notifications will be sent to the channel in which the command is used in. Useful for any club's Discord server that wants to send out reminders about their events.",
+            inline=False)
+        embed.add_field(
+            name="notifications",
+            value=
+            "Aliases: None\nONLY SERVER ADMINISTRATORS MAY RUN THIS COMMAND.\nView the notifications enabled in your server.",
+            inline=False)
+        embed.add_field(
+            name="notifications remove",
+            value=
+            f"Aliases: `notifications delete`\nArgument: `[notification #]` or `all`\nONLY SERVER ADMINISTRATORS MAY RUN THIS COMMAND.\nDelete a notification from your server. Use `{prefix}notifications` to find the notification # to remove. Or, you may use `all` to remove all notifications from your server.",
+            inline=False)
+        await ctx.send(embed=embed)
+
+    elif args.lower() == {"dining", "menu"}:
+        embed.add_field(
+            name="Showing help for `dining`",
+            value=
+            "Alias: `menu`\nUse to find today's dining hall menus for breakfast, lunch, and dinner where applicable. Select a dining hall and a meal from the dropdown to view the menu."
+        )
+        await ctx.send(embed=embed)
+
+    elif args.lower() == "invite":
+        embed.add_field(
+            name="Showing help for `invite`",
+            value=
+            "Aliases: None\nGenerate an invite link so you can add me to another server!"
+        )
+        await ctx.send(embed=embed)
 
 
 class DiningMenu(discord.ui.Select):
