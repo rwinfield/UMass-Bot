@@ -1,0 +1,548 @@
+import discord
+from discord.ext import commands, tasks
+import os
+from bs4 import BeautifulSoup
+import requests
+from datetime import datetime
+import feedparser
+import math
+from keep_alive import keep_alive
+from urllib.parse import urlencode, quote
+import html2text
+import discord.ui
+import sqlite3
+import sched, time, asyncio
+
+bot = commands.Bot(command_prefix="!", intents=discord.Intents().all())
+
+@bot.event
+async def on_ready():
+    print('Logged in as {0.user}'.format(bot))
+    await bot.change_presence(activity=discord.Game(name="!help"))
+    # auto_message.start()
+
+# # SEND MESSAGE EVERY 10 SECONDS
+# @tasks.loop(seconds=10)
+# async def auto_message():
+#     message_channel = bot.get_channel(1123432549893537854)
+#     # await message_channel.send("Hello")
+
+@bot.command()
+async def notify(ctx):
+    await ctx.send("Please enter a host ID")
+    def check(message):
+         return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id 
+    msg = await bot.wait_for('message', check = check)
+    await ctx.send(f"{msg.content}")
+
+@bot.command()
+async def invite(ctx):
+    await ctx.send("Invite me to your server!\nhttps://discord.com/api/oauth2/authorize?client_id=1123433115495440415&permissions=69268817313729&scope=bot")
+
+# Paginator built using https://www.youtube.com/watch?v=PRC4Ev5TJwc&t=1s
+class Paginator(discord.ui.View):
+    def __init__(self, items, item_type):
+        super().__init__()
+        self.items = items
+        self.page = 1
+        self.max_elems = 5
+        self.start = 0
+        self.end = 0
+        self.item_type = item_type
+
+    async def send(self, ctx):
+        self.next_button.disabled = (len(self.items) < self.max_elems)
+        self.message = await ctx.send(embed=self.create_embed(self.get_current_page_data()), view=self)
+
+    def create_embed(self, items):
+        embed = discord.Embed(title=f"{int(len(self.items))} {self.item_type}{'s' if int(len(self.items)) != 1 else ''} found", color=0x971B2F)
+        for item in items:
+            embed.add_field(name=item['item'], value=item['details'], inline=False)
+        embed.set_footer(text=f"Showing results {int(self.start + 1)}-{int(self.end)} of {int(len(self.items))}. P{int(self.page)}/{int(math.ceil(len(self.items) / self.max_elems))}. Results provided by UMass Amherst Campus Pulse.")
+        embed.set_thumbnail(url="https://www.umass.edu/gss/sites/default/files/images/header/download.png")
+        return embed
+        
+
+    async def update_message(self, items):
+        self.update_buttons()
+        await self.message.edit(embed=self.create_embed(items), view=self)
+
+    def update_buttons(self):
+        if self.page == 1:
+            self.first_page_button.disabled = True
+            self.prev_button.disabled = True
+        else:
+            self.first_page_button.disabled = False
+            self.prev_button.disabled = False
+        if self.page == math.ceil(len(self.items) / self.max_elems):
+            self.next_button.disabled = True
+        else:
+            self.next_button.disabled = False
+
+    def get_current_page_data(self):
+        self.start = (self.page - 1) * self.max_elems
+        self.end = self.page * self.max_elems
+        if self.page == math.ceil(len(self.items) / self.max_elems):
+            self.end = len(self.items)
+        return self.items[self.start:self.end]
+
+    @discord.ui.button(label="1️⃣", style=discord.ButtonStyle.green, disabled=True)
+    async def first_page_button(self, interaction, button):
+        self.page = 1
+        await self.update_message(self.get_current_page_data())
+        await interaction.response.defer()
+
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.grey, disabled=True)
+    async def prev_button(self, interaction, button):
+        self.page -= 1
+        await self.update_message(self.get_current_page_data())
+        await interaction.response.defer()
+
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.grey)
+    async def next_button(self, interaction, button):
+        self.page += 1
+        await self.update_message(self.get_current_page_data())
+        await interaction.response.defer()
+
+def is_date(date):
+    date_format = "%m/%d/%Y"
+    try:
+        bool(datetime.strptime(str(date), date_format))
+        return True
+    except ValueError:
+        return False
+
+class DiningMenu(discord.ui.Select):
+    def __init__(self):
+        meals = [
+            discord.SelectOption(label="Breakfast"),
+            discord.SelectOption(label="Lunch"),
+            discord.SelectOption(label="Dinner"),
+            discord.SelectOption(label="Late Night")
+        ]
+        
+        dining_halls = [
+            discord.SelectOption(label="Berkshire"),
+            discord.SelectOption(label="Franklin"),
+            discord.SelectOption(label="Hampshire"),
+            discord.SelectOption(label="Worcester")
+        ]
+        
+        options = dining_halls + meals
+        
+        super().__init__(placeholder="Select meal and a dining hall.", max_values=2, min_values=2, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        meals = ["Breakfast", "Lunch", "Dinner", "Late Night"]
+        dining_halls = ["Berkshire", "Franklin", "Hampshire", "Worcester"]
+
+        if self.values[0] in meals and self.values[1] in meals or self.values[0] in dining_halls and self.values[1] in dining_halls:
+            await interaction.response.send_message("You must select a meal and a dining hall.")
+            return
+        
+        if self.values[0] in meals:
+            meal = self.values[0]
+            dining_hall = self.values[1]
+        else:
+            meal = self.values[1]
+            dining_hall = self.values[0]
+
+        if dining_hall in ["Franklin", "Hampshire"] and meal == "Late Night":
+            await interaction.response.send_message(f"{dining_hall} does not serve late night.")
+            return
+
+        if dining_hall == "Berkshire" and meal == "Breakfast":
+            await interaction.response.send_message("Berkshire does not serve breakfast.")
+            return
+            
+        url = f"https://umassdining.com/locations-menus/{dining_hall.lower()}/menu#{meal.lower()}_menu"
+        response = requests.get(url)
+        html_content = response.text
+        
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        div_element = soup.find("div", class_=f"{meal.lower()}_fp")
+        try:
+            blocks = div_element.find_all(class_=lambda c: c in ["menu_category_name", "lightbox-nutrition"])
+        except:
+            await interaction.response.send_message(f"{dining_hall} is not currently open for {meal.lower()}.")
+            return
+        embed = discord.Embed(title=f"Today's {meal.lower()} at {dining_hall}", color=0x971B2F)
+        menu = []
+        station = []
+        for block in blocks:
+            if "menu_category_name" in block["class"]:
+                menu.append(station)
+                station = []
+                station.append(block.text.upper())
+            else:
+                station.append(block.text)
+
+        menu.append(station)
+    
+        menu.pop(0)
+    
+        def compile_menu(station):
+            station.pop(0)
+            return("\n".join(station))
+        
+        for station in menu:
+            if station[0].startswith("LATINO"):
+                station[0] = "LATINO"
+            embed.add_field(name=station[0], value=compile_menu(station))
+
+        embed.url = url
+        embed.set_thumbnail(url="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRaB98-pY_fxWXtCaNTQiLkJrJBZdkcu1-zMQ&usqp=CAU")
+        await interaction.response.send_message(embed=embed)
+
+@bot.command(aliases=['menu'], brief="Shows today's menus at dining halls. Run `!dining` or `!menu` then select a dining hall and meal to view a menu.")
+async def dining(ctx):
+    view = discord.ui.View()
+    view.add_item(DiningMenu())
+    await ctx.send("Browse today's menus at the dining halls.", view=view)
+
+class ClubMenu(discord.ui.Select):
+    def __init__(self, ctx, args):
+        self.ctx = ctx
+        self.args = args
+        options = [
+            discord.SelectOption(label="ALL CATEGORIES"),
+            discord.SelectOption(label="Academic Council", value=1232),
+            discord.SelectOption(label="Advocacy Council", value=1237),
+            discord.SelectOption(label="Arts & Media Council", value=1233),
+            discord.SelectOption(label="Club Sport Council", value=1242),
+            discord.SelectOption(label="Cultural Council", value=1234),
+            discord.SelectOption(label="Graduate Student Organizations", value=6855),
+            discord.SelectOption(label="Greek Life - Fraternity", value=8127),
+            discord.SelectOption(label="Interfraternity Council", value=1235),
+            discord.SelectOption(label="Multicultural Greek Council", value=6498),
+            discord.SelectOption(label="National Pan-Hellenic Council", value=6964),
+            discord.SelectOption(label="Other", value=8129),
+            discord.SelectOption(label="Panhellenic Council", value=1241),
+            discord.SelectOption(label="Recreation Council", value=2445),
+            discord.SelectOption(label="Religious & Spiritual Council", value=1238),
+            discord.SelectOption(label="Residential Life", value=1229),
+            discord.SelectOption(label="Service & Engagement Council", value=1240),
+            discord.SelectOption(label="Student Businesses", value=1243),
+            discord.SelectOption(label="Student Government Organizations", value=1236)
+        ]
+        
+        super().__init__(placeholder="Select one or more category/ies.", min_values=1, max_values=len(options), options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_values = self.values
+        if "ALL CATEGORIES" in selected_values:
+            selected_values = "ALL CATEGORIES"
+
+        category_query = ""
+
+        if selected_values != "ALL CATEGORIES":
+            i = 0
+            for category in selected_values:
+                if i != 0:
+                    category_query += f"or(CategoryIds%2Fany(x%3A%20x%20eq%20%27{category}%27))"
+                else:
+                    category_query += f"filter=(CategoryIds%2Fany(x%3A%20x%20eq%20%27{category}%27))"
+                i += 1
+            category_query += "&"
+
+        query_string = category_query
+        
+        if len(self.args) > 0:
+            input_query = quote(self.args[0])
+            query = {
+                'query': input_query
+            }
+            
+            query_string += urlencode(query)
+
+        url = f"https://umassamherst.campuslabs.com/engage/api/discovery/search/organizations?orderBy%5B0%5D=UpperName%20asc&top=99999&{query_string}&skip=0"
+
+        response = requests.get(url)
+        data = response.json()
+        clubs = data['value']
+        clubs_list = []
+        
+        for club in clubs:
+            clubs_list.append(club_extractor(club))
+    
+        paginator_view = Paginator(items=clubs_list, item_type="club")
+        await interaction.response.defer()
+        await paginator_view.send(self.ctx)
+        await interaction.response.defer()
+
+def club_extractor(club):
+    for key,value in club.items():
+        if key == 'Name':
+            name = value.strip()
+        elif key == 'CategoryNames':
+            category = "N/A"
+            if len(value) == 1 and value[0] == "Graduate Student Organizations":
+                category = "Graduate Student Organizations"
+            if len(value) > 1:
+                category = value[1].strip()
+        elif key == 'WebsiteKey':
+            identifier = "N/A"
+            if identifier is not None:
+                identifier = value.strip()
+        elif key == 'Description':
+            description = "N/A"
+            if value is not None:
+                description = html2text.html2text(value, bodywidth=float('inf'))
+                description = description[:300] + ("...\n" if len(description) > 300 else "")
+
+    return {
+        "item": name,
+        "details": f"Category: {category}\nClub Indentifier: `{identifier}`\nDescription: _{description}_"
+    }
+
+def more_clubs(identifier):
+    all_clubs_url = "https://umassamherst.campuslabs.com/engage/api/discovery/search/organizations?orderBy%5B0%5D=UpperName%20asc&top=99999&skip=0"
+    response = requests.get(all_clubs_url)
+    data = response.json()
+    clubs = data['value']
+
+    i = 0
+    for club in clubs:
+        if club["WebsiteKey"] == identifier:
+            break
+        i += 1
+        if i == len(clubs):
+            return discord.Embed(title="No events found with that identifier.", color=0x971B2F)
+
+    category = "N/A"
+    if len(club["CategoryNames"]) == 1 and club["CategoryNames"][0] == "Graduate Student Organizations":
+        category = "Graduate Student Organizations"
+    if len(club["CategoryNames"]) > 1:
+        category = club["CategoryNames"][1].strip()
+
+    club_url = f"https://umassamherst.campuslabs.com/engage/api/discovery/organization/{club['Id']}/?"
+    response = requests.get(club_url)
+    data = response.json()
+
+    addtl_info_url = f"https://umassamherst.campuslabs.com/engage/api/discovery/organization/{club['Id']}/additionalFields?"
+    addtl_info_response = requests.get(addtl_info_url)
+    addtl_info_data =  addtl_info_response.json()
+    
+    try:
+        meeting_info = addtl_info_data["items"][0]["freeText"]
+    except:
+        meeting_info = ""
+
+    club_info = {
+        "Name": data["name"],
+        "Alias": data["shortName"],
+        "Identifier": "`" + str(identifier) + "`",
+        "Category": category,
+        "Description": html2text.html2text(data["description"], bodywidth=float('inf'))[:1024],
+        "Meeting Info": meeting_info,
+        ":e_mail: Email": data["email"],
+        ":camera: Instagram":  data["socialMedia"]["InstagramUrl"],
+        ":arrow_forward: YouTube": data["socialMedia"]["YoutubeUrl"],
+        ":regional_indicator_f: Facebook": data["socialMedia"]["FacebookUrl"],
+        ":dove: Twitter": data["socialMedia"]["TwitterUrl"]
+    }
+    
+    embed = discord.Embed(title=f"{club_info['Name']}", color=0x971B2F)
+    i = 0
+    for key, value in club_info.items():
+        if i > 0:
+            if not (value == "" or value == None):
+                embed.add_field(name=key, value=value, inline=False)
+        i += 1
+
+    embed.url = f"https://umassamherst.campuslabs.com/engage/organization/{identifier}"
+    image = club["ProfilePicture"]
+    embed.set_thumbnail(url=f"https://se-images.campuslabs.com/clink/images/{image}?preset=med-sq")
+    embed.set_footer(text="RSO information provided by UMass Campus Pulse.")
+    return embed
+
+@bot.command(aliases=['club', 'rso', 'rsos'], case_insensitive=True, brief="Find Registered Student Organizations (RSOs) at UMass! Run `!clubs` or `rsos` for more detail.")
+async def clubs(ctx, *args):
+    view = discord.ui.View()
+    if len(args) == 1 and args[0] == "more":
+        await ctx.send("To find more information on a club, run `!clubs more [identifier]`.")
+        return
+    if len(args) == 2 and args[0] == "more":
+        await ctx.send(embed=more_clubs(args[1]))
+        return
+    view.add_item(ClubMenu(ctx=ctx, args=args))
+    join = ' '.join(args) if args else '(none)'
+    await ctx.send(f"Search query: `{join}`. Next, select the club categories (the top option will show all):", view=view)
+
+class EventThemes(discord.ui.Select):
+    def __init__(self, selected_options, ctx, date_arg):
+        options = [
+            discord.SelectOption(label="ALL THEMES", value="ALL"),
+            discord.SelectOption(label="Arts & Music", value="Arts"),
+            discord.SelectOption(label="Cultural", value="Cultural"),            
+            discord.SelectOption(label="Service", value="CommunityService"),
+            discord.SelectOption(label="Social", value="Social"),
+            discord.SelectOption(label="Learning", value="ThoughtfulLearning")
+        ]
+        super().__init__(placeholder="Select themes.", options=options, custom_id="EventThemes", min_values=1, max_values=len(options))
+        self.selected_options = selected_options
+        self.date_arg = date_arg
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        selections = interaction.data['values']
+        self.selected_options.update({"theme": selections})
+        view = discord.ui.View()
+        view.add_item(EventCategories(self.selected_options, self.ctx, self.date_arg))
+        await interaction.response.edit_message(content='Please select your category/ies:', view=view)
+
+class EventCategories(discord.ui.Select):
+    def __init__(self, selected_options, ctx, date_arg):
+        options = [
+            discord.SelectOption(label="ALL CATEGORIES", value="ALL"),
+            discord.SelectOption(label="Awards", value="Awards"),
+            discord.SelectOption(label="Community Service", value="Community Service"),
+            discord.SelectOption(label="Cultural-based", value="Cultural-based"),
+            discord.SelectOption(label="Music", value="Music"),
+            discord.SelectOption(label="Other", value="Other"),
+            discord.SelectOption(label="Performance", value="Performance"),
+            discord.SelectOption(label="Rehearsal/Practice", value="Rehearsal/Practice"),
+            discord.SelectOption(label="Training/Workshop", value="Training/workshop"),
+        ]
+        super().__init__(placeholder="Select categories.", options=options, custom_id="EventCategories", min_values=1, max_values=len(options))
+        self.selected_options = selected_options
+        self.date_arg = date_arg
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        selections = interaction.data['values']
+        self.selected_options.update({"categoryNames": selections})
+        view = discord.ui.View()
+        view.add_item(EventPerks(self.selected_options, self.ctx, self.date_arg))
+        await interaction.response.edit_message(content='Please select your perk(s):', view=view)
+
+class EventPerks(discord.ui.Select):
+    def __init__(self, selected_options, ctx, date_arg):
+        options = [
+            discord.SelectOption(label="DOES NOT MATTER", value="ALL"),
+            discord.SelectOption(label="Free Food", value="Free Food"),
+            discord.SelectOption(label="Free Stuff", value="Free Stuff")
+        ]
+        super().__init__(placeholder="Select any perks or choose 'DOES NOT MATTER'.", options=options, custom_id="EventPerks", min_values=1, max_values=len(options))
+        self.selected_options = selected_options
+        self.date_arg = date_arg
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        selections = interaction.data['values']
+        self.selected_options.update({"benefitNames": selections})
+
+        event_matches = process_options(self.selected_options, self.date_arg)
+        paginator_view = Paginator(items=event_matches, item_type="event")
+        await paginator_view.send(self.ctx)
+        await interaction.response.defer()
+
+def process_options(selected_options, date_arg):
+    #CHECK IF USER PASSED IN A DATE, AND IF NOT, DEFAULT TO BELOW
+    if date_arg == "":
+        date_arg = datetime.now()
+    else:
+        #parse date
+        date_arg = datetime.strptime(date_arg, '%m/%d/%Y')
+    date_arg = datetime.strftime(date_arg, '%Y-%m-%d') 
+         
+    events_url = f"https://umassamherst.campuslabs.com/engage/api/discovery/event/search?endsAfter={date_arg}T14%3A22%3A15-04%3A00&orderByField=endsOn&orderByDirection=ascending&status=Approved&take=99999&query="
+    events_response = requests.get(events_url)
+    events_data = events_response.json()
+    events_data = events_data['value']
+
+    clubs_url = "https://umassamherst.campuslabs.com/engage/api/discovery/search/organizations?orderBy%5B0%5D=UpperName%20asc&top=99999&filter=&query="
+    clubs_response = requests.get(clubs_url)
+    clubs_data = clubs_response.json()
+    clubs_data = clubs_data['value']
+
+    # if a user selected ALL and other options, set to just ALL
+    for key, value in selected_options.items():
+        if "ALL" in value:
+            selected_options[key][0] = "ALL"
+
+    for key in selected_options:
+        event_matches = []
+        for value in selected_options[key]:
+            for event in events_data:
+                if len(event["categoryNames"]) == 0:
+                    event["categoryNames"] = ["Other"]
+                if value in event[key] or value == "ALL":
+                    event_matches.append(event)
+        events_data = event_matches
+
+    ret_str = []
+    i = 0
+    for event in events_data:
+        i += 1
+        
+        if len(event["categoryNames"]) == 0:
+            event["categoryNames"] = ["Other"]
+
+        if event["theme"] == "ThoughtfulLearning":
+            event["theme"] = "Learning"
+
+        if event["theme"] == "CommunityService":
+            event["theme"] = "Community Service"
+
+        description = "N/A"
+        if event["description"] is not None:
+            description = html2text.html2text(event["description"], bodywidth=float('inf'))
+            description = description[:300] + ("...\n" if len(description) > 300 else "")
+
+        details = f"Theme: {event['theme']}\n"
+        details += f"Host: {event['organizationName']}\n"
+        details += f"Host identifier: {host_id(event['organizationId'], clubs_data)}\n"
+        details += f"Categor{'y' if len(event['categoryNames']) == 1 else 'ies'}: {', '.join(event['categoryNames'])}\n"
+        details += f"Perk{'s' if len(event['benefitNames']) != 1 else ''}: "
+        details += f"{', '.join(event['benefitNames'])}" if len(event['benefitNames']) >= 1 else "none"
+        details += f"\nLocation: {event['location']}\n"
+        
+        date_format = "%Y-%m-%dT%H:%M:%S%z"
+        starts_on = datetime.strptime(event['startsOn'], date_format)
+        starts_on = int(starts_on.timestamp())
+
+        ends_on = datetime.strptime(event['endsOn'], date_format)
+        ends_on = int(ends_on.timestamp())
+
+        details += f"Time: <t:{starts_on}> - <t:{ends_on}>\n"
+        details += f"Description: _{description}_"
+        
+        ret_str.append({
+            "item": f"#{i}: {event['name']}\nhttps://umassamherst.campuslabs.com/engage/event/{event['id']}",
+            "details": details
+        })
+
+    return ret_str
+
+def host_id(id: int, dict: clubs_data) -> str:
+    for club in cl
+        
+    
+
+@bot.command(brief="Find events happening at UMass Amherst! !events or !events mm/dd/yyyy to view events on and after a particular date.")
+async def events(ctx, *args):
+    selected_options = {}
+    view = discord.ui.View()
+    if args and not is_date(args[0]):
+        await ctx.send("Invalid date entered. Please enter in the format `mm/dd/yyyy` or simply run `!events` to view all events starting from today.")
+        return
+    date_arg = ""
+    if args and is_date(args[0]):
+        date_arg = args[0]
+    view.add_item(EventThemes(selected_options=selected_options, ctx=ctx, date_arg=date_arg))
+    await ctx.send(content='Please select your theme(s):', view=view)
+
+try:
+    keep_alive()
+    bot.run(os.environ['TOKEN'])
+except:
+    os.system('kill 1')
+    
+
+
+
+
+
+
